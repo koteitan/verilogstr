@@ -1,5 +1,7 @@
 # Nostr 署名 (BIP-340 Schnorr / secp256k1) Verilog 実装
 
+version: v0.1
+
 Nostr のイベント署名をハードウェアで実装するための Verilog コードの **設計骨格** です。
 
 ## ファイル構成

@@ -100,8 +100,11 @@ module sha256_block (
                 active <= 1;
             end else if (active) begin
                 // ワーク: cnt が 0..63 まで圧縮
-                if (cnt >= 16 && cnt < 64) begin
-                    W[cnt] <= s1(W[cnt-2]) + W[cnt-7] + s0(W[cnt-15]) + W[cnt-16];
+                // メッセージスケジュールは「次のラウンド用」を先行計算する。
+                // cnt=0 で W[16] を生成 (W[0..15] から)、cnt=47 で W[63] を生成。
+                // これにより cnt=16..63 の COMPRESS が新値 W[cnt] を読める。
+                if (cnt < 48) begin
+                    W[cnt+16] <= s1(W[cnt+14]) + W[cnt+9] + s0(W[cnt+1]) + W[cnt];
                 end
                 if (cnt < 64) begin : COMPRESS
                     reg [31:0] T1, T2;
@@ -225,33 +228,36 @@ module sha256_top #(parameter MAX_BYTES = 128) (
     end
 
     // ----- パディングヘルパ (function 内ループで生成) -----
+    // MAX_BYTES = 128 (= 1024 bit) を前提にした簡易パディング。
+    // 任意 MAX_BYTES への一般化は後段の TODO。
     function [511:0] build_block_1;
-        input [MAX_BYTES*8-1:0] dat;
-        input [11:0]            dl;
-        reg   [1023:0]          buf;
-        integer                 bits;
+        input [1023:0] dat;
+        input [11:0]   dl;
+        reg   [1023:0] bbuf;
+        reg   [63:0]   bits;
         begin
             bits = dl * 8;
-            // 上位に dat、その直後に 0x80 を置く。残りはゼロ。
-            // 最大 119B 以下を仮定し 1024bit バッファに収める。
-            buf = {dat, 1024'd0};                             // dat を上位詰め
-            buf[1024 - bits - 8 +: 8] = 8'h80;                // 0x80 マーカー
-            buf[63:0] = bits[63:0];                           // 末尾 64bit に bit 長 (1ブロック収まるとき)
-            build_block_1 = buf[1023:512];
+            bbuf = dat;                              // dat は MSB 詰めで渡される前提
+            bbuf[1024 - bits - 8 +: 8] = 8'h80;      // 0x80 マーカー
+            if (dl <= 55)
+                bbuf[575:512] = bits[63:0];          // 1 ブロック完結時の length 位置
+            else
+                bbuf[63:0]   = bits[63:0];           // 2 ブロック時の length 位置
+            build_block_1 = bbuf[1023:512];
         end
     endfunction
 
     function [511:0] build_block_2;
-        input [MAX_BYTES*8-1:0] dat;
-        input [11:0]            dl;
-        reg   [1023:0]          buf;
-        integer                 bits;
+        input [1023:0] dat;
+        input [11:0]   dl;
+        reg   [1023:0] bbuf;
+        reg   [63:0]   bits;
         begin
             bits = dl * 8;
-            buf = {dat, 1024'd0};
-            buf[1024 - bits - 8 +: 8] = 8'h80;
-            buf[63:0] = bits[63:0];
-            build_block_2 = buf[511:0];
+            bbuf = dat;
+            bbuf[1024 - bits - 8 +: 8] = 8'h80;
+            bbuf[63:0] = bits[63:0];
+            build_block_2 = bbuf[511:0];
         end
     endfunction
 
