@@ -77,6 +77,38 @@ vvp sim
 gtkwave nostr_sign.vcd
 ```
 
+## 動作実例: Verilog で署名した Nostr イベント
+
+`tb_hello_world.v` で適当な秘密鍵を使い、`kind:1 / content:"hello world"`
+の Nostr イベントを Verilog (Icarus iverilog) シミュレータ上で署名した結果。
+得られた署名は外部の Python リファレンス実装で BIP-340 verify = **VALID** を確認済。
+
+| 項目         | 値                                                                   |
+|-------------|---------------------------------------------------------------------|
+| `nsec1`     | `nsec1kzlc50ntfsxnrf0z7r657zsj8rr73ge0tkv7x9r2ttgjh062rjfs5hqm5t`     |
+| `npub1`     | `npub14xurjwprdu2ug5hl20qwhh3y766jlxhfefrcyxxyaj7x0sxzzssqn4exwz`     |
+| `created_at`| `1700000000`                                                         |
+| `event_id`  | `871ce455cfdbaf3deb04a8f101494df9142fc1f9eeba8fc6d0934768f4063062`   |
+| `sig (R)`   | `a6c159cc30a14de9d2a8502fc3354e01c8d63d2a3c7fb2e9ee7c94a9b4a29d97`   |
+| `sig (s)`   | `1e61ef9d59f81885c928203d308466b73a0c7316afe23aa819637d4b06137ac4`   |
+
+署名済イベント (relay へ `["EVENT", ...]` で送信可能):
+
+```json
+{
+  "id": "871ce455cfdbaf3deb04a8f101494df9142fc1f9eeba8fc6d0934768f4063062",
+  "pubkey": "a9b83938236f15c452ff53c0ebde24f6b52f9ae9ca478218c4ecbc67c0c21420",
+  "created_at": 1700000000,
+  "kind": 1,
+  "tags": [],
+  "content": "hello world",
+  "sig": "a6c159cc30a14de9d2a8502fc3354e01c8d63d2a3c7fb2e9ee7c94a9b4a29d971e61ef9d59f81885c928203d308466b73a0c7316afe23aa819637d4b06137ac4"
+}
+```
+
+BIP-340 公式テストベクタ (`tb_nostr_sign.v` の v0〜v3) も同様にビット完全一致で
+通過することを確認済。
+
 ## 回路規模 (Yosys 0.9 で合成、`synth → abc -lut 4` 後の概算)
 
 シミュレーション behavioral モデルとして書かれているため、本コードは
