@@ -49,11 +49,19 @@ module nostr_sign (
     localparam [255:0] SECP_N =
         256'hFFFFFFFF_FFFFFFFF_FFFFFFFF_FFFFFFFE_BAAEDCE6_AF48A03B_BFD25E8C_D0364141;
 
-    // BIP-340 タグ付きハッシュ用プリコンピュート値 (sha256(tag) を二回連結したもの)
-    // ここではプレースホルダ定数。実装時は事前計算した値を入れる。
-    localparam [511:0] TAG_AUX_PRE       = 512'h0; // sha256("BIP0340/aux")||sha256("BIP0340/aux")
-    localparam [511:0] TAG_NONCE_PRE     = 512'h0; // sha256("BIP0340/nonce") x2
-    localparam [511:0] TAG_CHALLENGE_PRE = 512'h0; // sha256("BIP0340/challenge") x2
+    // BIP-340 タグ付きハッシュ用プリコンピュート値: sha256(tag) を 2 回連結
+    //   sha256("BIP0340/aux")       = f1ef4e5e...d8c1cc90
+    //   sha256("BIP0340/nonce")     = 07497734...52bfeb2f
+    //   sha256("BIP0340/challenge") = 7bb52d7a...6d48d37c
+    localparam [255:0] H_TAG_AUX =
+        256'hf1ef4e5ec063cada6d94cafa9d987ea069265839ecc11f972d77a52ed8c1cc90;
+    localparam [255:0] H_TAG_NONCE =
+        256'h07497734a79bcb355b9b8c7d034f121cf434d73ef72dda19870061fb52bfeb2f;
+    localparam [255:0] H_TAG_CHALLENGE =
+        256'h7bb52d7a9fef58323eb1bf7a407db382d2f3f2d81bb1224f49fe518f6d48d37c;
+    localparam [511:0] TAG_AUX_PRE       = {H_TAG_AUX,       H_TAG_AUX};
+    localparam [511:0] TAG_NONCE_PRE     = {H_TAG_NONCE,     H_TAG_NONCE};
+    localparam [511:0] TAG_CHALLENGE_PRE = {H_TAG_CHALLENGE, H_TAG_CHALLENGE};
 
     //--------------------------------------------------------------------------
     // ステート
@@ -70,7 +78,8 @@ module nostr_sign (
     localparam S_NORMALIZE_K = 5'd9;   // R.y 奇数なら k = n-k'
     localparam S_HASH_E      = 5'd10;  // e = tagged_hash("challenge", R.x||P.x||m)
     localparam S_REDUCE_E    = 5'd11;  // e = e mod n
-    localparam S_COMPUTE_S   = 5'd12;  // s = (k + e*d) mod n
+    localparam S_COMPUTE_S   = 5'd12;  // ed = e*d (mod n) 結果受信 → k+ed 起動
+    localparam S_COMPUTE_S2  = 5'd15;  // s = k + ed (mod n) 結果受信
     localparam S_DONE        = 5'd13;
     localparam S_ERR         = 5'd14;
 
@@ -177,7 +186,8 @@ module nostr_sign (
             S_NORMALIZE_K: if (mod_done)             next_state = S_HASH_E;
             S_HASH_E:      if (sha_done)             next_state = S_REDUCE_E;
             S_REDUCE_E:    if (mod_done)             next_state = S_COMPUTE_S;
-            S_COMPUTE_S:   if (mod_done)             next_state = S_DONE;
+            S_COMPUTE_S:   if (mod_done)             next_state = S_COMPUTE_S2;
+            S_COMPUTE_S2:  if (mod_done)             next_state = S_DONE;
             S_DONE:                                  next_state = S_IDLE;
             S_ERR:                                   next_state = S_IDLE;
             default:                                 next_state = S_IDLE;
@@ -332,11 +342,18 @@ module nostr_sign (
 
             //----------------------------------------------------------------
             S_COMPUTE_S: if (mod_done) begin
-                // (e*d) を受けて k と加算
-                // 注: 本来は二段階。ここでは簡略化のため mod_done を一回で扱う想定で
-                //     サブモジュール側がこの2ステップを面倒みる前提とする。
+                // mod_result = e*d (mod n)
+                // 次に k + ed (mod n) を計算
+                mod_op    <= 2'd0;        // add
+                mod_a     <= k_reg;
+                mod_b     <= mod_result;
+                mod_start <= 1'b1;
+            end
+
+            //----------------------------------------------------------------
+            S_COMPUTE_S2: if (mod_done) begin
                 sig_r <= kx_reg;
-                sig_s <= (k_reg + mod_result); // 真の実装は (k + ed) mod n を再度
+                sig_s <= mod_result;      // (k + e*d) mod n
                 done  <= 1'b1;
             end
 

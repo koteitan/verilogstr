@@ -6,7 +6,7 @@
 `timescale 1ns/1ps
 
 module tb_sha256_top;
-    localparam MAX_BYTES = 128;
+    localparam MAX_BYTES = 192;
     reg          clk = 0;
     reg          rst_n = 0;
     reg          start = 0;
@@ -104,6 +104,48 @@ module tb_sha256_top;
             dbuf[MAX_BYTES*8-1 -: 56*8] = msg56;
         end
         run_top(dbuf, 12'd56, EXP_56, "56B");
+
+        // --- "a" を N バイト並べた長メッセージで境界テスト ---
+        begin : LONG_TESTS
+            reg [MAX_BYTES*8-1:0] tmp;
+            integer k;
+            // n=64 (2 ブロック)
+            tmp = 0;
+            for (k=0; k<64; k=k+1) tmp[MAX_BYTES*8-1 - k*8 -: 8] = 8'h61;
+            run_top(tmp, 12'd64,
+                    256'hffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb,
+                    "64B");
+            // n=96 (2 ブロック, BIP-340 サイズ)
+            tmp = 0;
+            for (k=0; k<96; k=k+1) tmp[MAX_BYTES*8-1 - k*8 -: 8] = 8'h61;
+            run_top(tmp, 12'd96,
+                    256'hee4caa5518a866f33e174d6e71ba3961a86ca00a7486b132e5a9f01bfaa1d794,
+                    "96B");
+            // n=119 (2 ブロック上限)
+            tmp = 0;
+            for (k=0; k<119; k=k+1) tmp[MAX_BYTES*8-1 - k*8 -: 8] = 8'h61;
+            run_top(tmp, 12'd119,
+                    256'h31eba51c313a5c08226adf18d4a359cfdfd8d2e816b13f4af952f7ea6584dcfb,
+                    "119B");
+            // n=120 (3 ブロックに切り替わる境界)
+            tmp = 0;
+            for (k=0; k<120; k=k+1) tmp[MAX_BYTES*8-1 - k*8 -: 8] = 8'h61;
+            run_top(tmp, 12'd120,
+                    256'h2f3d335432c70b580af0e8e1b3674a7c020d683aa5f73aaaedfdc55af904c21c,
+                    "120B");
+            // n=160 (3 ブロック, BIP-340 nonce 想定サイズ)
+            tmp = 0;
+            for (k=0; k<160; k=k+1) tmp[MAX_BYTES*8-1 - k*8 -: 8] = 8'h61;
+            run_top(tmp, 12'd160,
+                    256'hbf18b43b61652b5d73f41ebf3d72e5e43aebf5076f497dde31ea3de9de4998ef,
+                    "160B");
+            // n=183 (3 ブロック上限)
+            tmp = 0;
+            for (k=0; k<183; k=k+1) tmp[MAX_BYTES*8-1 - k*8 -: 8] = 8'h61;
+            run_top(tmp, 12'd183,
+                    256'ha88d44a2940a3a2fc363304926d263bf271afb562bab5640cb0e81f5e84320a3,
+                    "183B");
+        end
 
         if (errors == 0)
             $display("=== ALL TESTS PASSED ===");

@@ -46,6 +46,13 @@ module tb_tagged_sha256;
     localparam [255:0] T3_EXP =
         256'ha50885aadef94ee57e5537e27ef82d4db7c756193539d3d8d0bb6ee5f3a7ad46;
 
+    // Test 4: tag="BIP0340/nonce", data=96 bytes (32x 0x00 || 32x 0x11 || 32x 0x22)
+    //   = total 160 byte → sha256_top 3-block path
+    localparam [255:0] T4_TAG_HASH =
+        256'h07497734a79bcb355b9b8c7d034f121cf434d73ef72dda19870061fb52bfeb2f;
+    localparam [255:0] T4_EXP =
+        256'h5c1ba54839ab901fbcf818b3e9b4659d4d23ea67ee62fbabf4a6fa684845cf0c;
+
     integer errors = 0;
 
     task run_tag;
@@ -101,6 +108,19 @@ module tb_tagged_sha256;
         // Test 3: tag="BIP0340/challenge", data=32 zero bytes
         dbuf = 0;
         run_tag(T3_TAG_HASH, dbuf, 12'd32, T3_EXP, "BIP0340_chal");
+
+        // Test 4: tag="BIP0340/nonce", data=96B (32x00 || 32x11 || 32x22)
+        dbuf = 0;
+        // 0x00 * 32 (上位 32B): すでに 0
+        // 0x11 * 32 (次の 32B)
+        begin : LOAD96
+            integer k;
+            for (k=0; k<32; k=k+1)
+                dbuf[1023 - 32*8 - k*8 -: 8] = 8'h11;
+            for (k=0; k<32; k=k+1)
+                dbuf[1023 - 64*8 - k*8 -: 8] = 8'h22;
+        end
+        run_tag(T4_TAG_HASH, dbuf, 12'd96, T4_EXP, "BIP0340_nonce");
 
         if (errors == 0)
             $display("=== ALL TESTS PASSED ===");

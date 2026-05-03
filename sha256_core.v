@@ -129,12 +129,13 @@ endmodule
 
 
 //------------------------------------------------------------------------------
-// SHA-256 トップ (任意長メッセージ、最大 1024bit = 128byte 想定)
+// SHA-256 トップ (任意長メッセージ、最大 1536bit = 192byte 想定)
 //   data       : 上位詰め (MSB側にデータ、LSB側ゼロパディング前の領域)
-//   data_len   : バイト長 (0..128)
-//   ※ より長いメッセージへ拡張する場合は内部のブロック数ループを増やす。
+//   data_len   : バイト長 (0..183)
+//   3 ブロックまでパディング: ≦55B=1blk, 56-119B=2blk, 120-183B=3blk
+//   ※ それ以上の長さに拡張する場合はステート機械とバッファ幅を増やす。
 //------------------------------------------------------------------------------
-module sha256_top #(parameter MAX_BYTES = 128) (
+module sha256_top #(parameter MAX_BYTES = 192) (
     input  wire                     clk,
     input  wire                     rst_n,
     input  wire                     start,
@@ -149,10 +150,6 @@ module sha256_top #(parameter MAX_BYTES = 128) (
         {32'h6a09e667, 32'hbb67ae85, 32'h3c6ef372, 32'ha54ff53a,
          32'h510e527f, 32'h9b05688c, 32'h1f83d9ab, 32'h5be0cd19};
 
-    // 内部: パディングして 512bit ブロックを生成し、順次圧縮
-    // ここでは最大 2 ブロック (1024bit) まで対応する簡易版。
-    // 1ブロック目=data[0..511], 2ブロック目=data[512..1023]+末尾長。
-
     reg          blk_start;
     wire         blk_done;
     reg  [255:0] h_state;
@@ -165,99 +162,78 @@ module sha256_top #(parameter MAX_BYTES = 128) (
         .done(blk_done), .h_out(h_next)
     );
 
+    // ステート機械: 最大 3 ブロック処理
     reg [2:0] st;
-    localparam ST_IDLE=0, ST_BLK1=1, ST_WAIT1=2, ST_BLK2=3, ST_WAIT2=4, ST_DONE=5;
+    localparam ST_IDLE=0, ST_WAIT1=1, ST_WAIT2=2, ST_WAIT3=3;
 
-    // パディング: メッセージ末尾に 0x80、その後 0 詰め、最後 64bit に bit長
-    reg [1023:0] padded;
-    reg [10:0]   total_blocks;
+    reg [1:0] tb_m1;  // total_blocks - 1 (0..2)
 
-    always @(*) begin
-        // バイト長を bit 長に
-        // padded = data || 0x80 || 0...0 || (len*8 を 64bit big-endian)
-        // 最大 1024bit (= 2ブロック) に収める前提
-        // 実装はバレルシフトを伴うため簡略化
-    end
-
-    // 注: 上記の padded 生成は合成可能な形に書き直す必要がある。
-    //     ここでは簡略のため「呼び出し側が data に 0x80 と長さフィールドまで
-    //     含めて渡し、data_len は実バイト長」を伝える前提でも動く構成にする。
-
-    integer total_bits;
+    // パディング済みフルバッファ (1536 bit = 3 ブロック分)
+    wire [1535:0] padded_w = build_padded(data, data_len);
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             st <= ST_IDLE; done <= 0; hash <= 0; blk_start <= 0;
-            h_state <= IV; blk <= 0; total_blocks <= 0;
+            h_state <= IV; blk <= 0; tb_m1 <= 0;
         end else begin
             blk_start <= 0;
             done      <= 0;
             case (st)
             ST_IDLE: if (start) begin
                 h_state <= h_init;
-                // パディング込み合計バイト数の概算
-                // (ここでは data_len <= 64 なら 1 ブロックで済む簡易判定)
-                if (data_len <= 55)
-                    total_blocks <= 1;
-                else if (data_len <= 119)
-                    total_blocks <= 2;
-                else
-                    total_blocks <= 2; // 簡易上限
-                // 1 ブロック目を準備
-                // パディング: data の MSB 側に詰めてあり、その直後に 0x80、末尾に bit 長
-                // (簡略実装。実用版ではビットシフタが必要)
-                blk <= build_block_1(data, data_len);
+                if (data_len <= 55)        tb_m1 <= 2'd0;
+                else if (data_len <= 119)  tb_m1 <= 2'd1;
+                else                       tb_m1 <= 2'd2;
+                blk       <= padded_w[1535:1024];
                 blk_start <= 1;
-                st <= ST_WAIT1;
+                st        <= ST_WAIT1;
             end
             ST_WAIT1: if (blk_done) begin
                 h_state <= h_next;
-                if (total_blocks == 1) begin
+                if (tb_m1 == 0) begin
                     hash <= h_next; done <= 1; st <= ST_IDLE;
                 end else begin
-                    blk       <= build_block_2(data, data_len);
+                    blk       <= padded_w[1023:512];
                     blk_start <= 1;
                     st        <= ST_WAIT2;
                 end
             end
             ST_WAIT2: if (blk_done) begin
+                h_state <= h_next;
+                if (tb_m1 == 1) begin
+                    hash <= h_next; done <= 1; st <= ST_IDLE;
+                end else begin
+                    blk       <= padded_w[511:0];
+                    blk_start <= 1;
+                    st        <= ST_WAIT3;
+                end
+            end
+            ST_WAIT3: if (blk_done) begin
                 hash <= h_next; done <= 1; st <= ST_IDLE;
             end
             endcase
         end
     end
 
-    // ----- パディングヘルパ (function 内ループで生成) -----
-    // MAX_BYTES = 128 (= 1024 bit) を前提にした簡易パディング。
-    // 任意 MAX_BYTES への一般化は後段の TODO。
-    function [511:0] build_block_1;
-        input [1023:0] dat;
-        input [11:0]   dl;
-        reg   [1023:0] bbuf;
+    // ----- パディング: data || 0x80 || 0..0 || length(64bit) -----
+    // length 位置はパディング後の最終ブロック末尾 64bit に置く。
+    function [1535:0] build_padded;
+        input [MAX_BYTES*8-1:0] dat;
+        input [11:0]            dl;
+        reg   [1535:0] bbuf;
         reg   [63:0]   bits;
         begin
             bits = dl * 8;
-            bbuf = dat;                              // dat は MSB 詰めで渡される前提
-            bbuf[1024 - bits - 8 +: 8] = 8'h80;      // 0x80 マーカー
+            bbuf = 0;
+            bbuf[1535 -: MAX_BYTES*8] = dat;              // dat を MSB 詰め
+            bbuf[1536 - bits - 8 +: 8] = 8'h80;           // 0x80 マーカー
             if (dl <= 55)
-                bbuf[575:512] = bits[63:0];          // 1 ブロック完結時の length 位置
+                bbuf[1087:1024] = bits;                   // block1 末尾
+            else if (dl <= 119)
+                bbuf[575:512]   = bits;                   // block2 末尾
             else
-                bbuf[63:0]   = bits[63:0];           // 2 ブロック時の length 位置
-            build_block_1 = bbuf[1023:512];
-        end
-    endfunction
-
-    function [511:0] build_block_2;
-        input [1023:0] dat;
-        input [11:0]   dl;
-        reg   [1023:0] bbuf;
-        reg   [63:0]   bits;
-        begin
-            bits = dl * 8;
-            bbuf = dat;
-            bbuf[1024 - bits - 8 +: 8] = 8'h80;
-            bbuf[63:0] = bits[63:0];
-            build_block_2 = bbuf[511:0];
+                bbuf[63:0]      = bits;                   // block3 末尾
+            build_padded = bbuf;
         end
     endfunction
 
@@ -274,18 +250,14 @@ module tagged_sha256 (
     input  wire         rst_n,
     input  wire         start,
     input  wire [511:0] tag_pre,         // sha256(tag)||sha256(tag)
-    input  wire [1023:0] data,           // 続く本体データ (上位詰め)
-    input  wire [11:0]  data_len,        // バイト長
+    input  wire [1023:0] data,           // 続く本体データ (上位詰め, ≦128B)
+    input  wire [11:0]  data_len,        // バイト長 (0..119)
     output reg          done,
     output wire [255:0] hash
 );
-    // 連結: tag_pre (64B) || data
-    // 全体長 = 64 + data_len
+    // 連結: tag_pre (64B) || data → 最大 64 + 128 = 192 byte = 1536 bit
     wire [11:0] total_len = data_len + 12'd64;
-
-    // 簡易: 全体を 1024bit バッファに上位詰めして sha256_top に渡す
-    // (data_len <= 64 までを想定)
-    wire [1023:0] all_data = {tag_pre, data[1023:512]};  // 64B + 先頭64B
+    wire [1535:0] all_data = {tag_pre, data};
 
     localparam [255:0] IV =
         {32'h6a09e667, 32'hbb67ae85, 32'h3c6ef372, 32'ha54ff53a,
@@ -294,7 +266,8 @@ module tagged_sha256 (
     reg start_d;
     always @(posedge clk) start_d <= start;
 
-    sha256_top #(.MAX_BYTES(128)) u_top (
+    wire done_w;
+    sha256_top #(.MAX_BYTES(192)) u_top (
         .clk(clk), .rst_n(rst_n),
         .start(start_d),
         .data(all_data),
@@ -303,7 +276,6 @@ module tagged_sha256 (
         .done(done_w),
         .hash(hash)
     );
-    wire done_w;
     always @(posedge clk) done <= done_w;
 
 endmodule

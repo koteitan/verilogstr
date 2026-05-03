@@ -1,6 +1,6 @@
 # Nostr 署名 (BIP-340 Schnorr / secp256k1) Verilog 実装
 
-version: v0.1
+version: v0.1.1
 
 Nostr のイベント署名をハードウェアで実装するための Verilog コードの **設計骨格** です。
 
@@ -76,3 +76,31 @@ iverilog -o sim nostr_sign.v sha256_core.v ec_arith.v tb_nostr_sign.v
 vvp sim
 gtkwave nostr_sign.vcd
 ```
+
+## 回路規模 (Yosys 0.9 で合成、`synth → abc -lut 4` 後の概算)
+
+シミュレーション behavioral モデルとして書かれているため、本コードは
+**combinational な 256x256 multiplier を多数並列でインスタンス化**しており、
+そのまま FPGA に載せるには非現実的なサイズです。Montgomery 乗算器で 1 個を
+時分割使用する形に書き換えるのが本格実装の前提となります (TODO 項目 2)。
+
+| モジュール             | LUT4   | FF      | 備考                                    |
+|----------------------|--------|---------|-----------------------------------------|
+| `field_mul_p`        |  186 k |     0   | 256x256 mul + 2 段 fast reduction (combinational) |
+| `sha256_block`       |   13 k |  ~2.8 k | FIPS 180-4 圧縮関数 (64 サイクル)         |
+| `sha256_top`         |   11 k |  ~2.8 k | パディング+最大 3 ブロック対応            |
+| `ec_point_mul_g`     | 5,427 k |  ~2.8 k | dbl + add + ec_to_affine + field_inv_p (256 反復) |
+
+`nostr_sign` 全体 (技術非依存 cell 数, `synth` 前):
+
+| 指標           | 値        |
+|---------------|----------|
+| Cells (total) | 6,117    |
+| Wire bits     | 256,936  |
+| `$mul` (256x256 multiplier instances) | 73 |
+| FF (DFF + ADFF cells) | 138 |
+| `$add` / `$sub` | 147 / 86 |
+
+`scalar_mod_n` がシミュレーション用に `%` 演算子を含むため、`nostr_sign`
+トップを LUT4 にマップすると `synth_xilinx` 系でエラーになります。
+合成可能化は本格 mod n 乗算器への置換 (TODO 項目 2) が前提。
