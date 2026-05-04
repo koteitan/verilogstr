@@ -1,6 +1,6 @@
 # Nostr 署名 (BIP-340 Schnorr / secp256k1) Verilog 実装
 
-version: v0.1.1
+version: v0.1.2
 
 Nostr のイベント署名をハードウェアで実装するための Verilog コードの **設計骨格** です。
 
@@ -121,7 +121,8 @@ BIP-340 公式テストベクタ (`tb_nostr_sign.v` の v0〜v3) も同様にビ
 | `field_mul_p`        |  186 k |     0   | 256x256 mul + 2 段 fast reduction (combinational) |
 | `sha256_block`       |   13 k |  ~2.8 k | FIPS 180-4 圧縮関数 (64 サイクル)         |
 | `sha256_top`         |   11 k |  ~2.8 k | パディング+最大 3 ブロック対応            |
-| `ec_point_mul_g`     | 5,427 k |  ~2.8 k | dbl + add + ec_to_affine + field_inv_p (256 反復) |
+| `ec_point_mul_g`     | 5,427 k |  ~2.8 k | combinational dbl + add + ec_to_affine + field_inv_p (256 反復) |
+| `ec_engine` (programmable, 既定) |   573 k |  ~4.4 k | 256-bit ALU 共有 + RegFile + ROM 形式に書き直したもの (約 1/9.5 サイズ) |
 
 `nostr_sign` 全体 (技術非依存 cell 数, `synth` 前):
 

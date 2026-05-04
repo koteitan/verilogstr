@@ -38,19 +38,24 @@ module tb_hello_world;
 
         @(negedge clk);
         start = 1;
-        @(negedge clk);
-        start = 0;
-
-        wait(done);
-        @(negedge clk);
-
-        if (err) begin
-            $display("=== ERROR (err=1) ===");
-        end else begin
-            $display("=== Verilog signed: ===");
-            $display("R = %h", sig_r);
-            $display("s = %h", sig_s);
-            $display("sig (R||s) = %h%h", sig_r, sig_s);
+        begin : MEASURE
+            integer t_start;
+            t_start = $time;
+            @(negedge clk);
+            start = 0;
+            wait(done);
+            @(negedge clk);
+            if (err) begin
+                $display("=== ERROR (err=1) ===");
+            end else begin
+                $display("=== Verilog signed: ===");
+                $display("R = %h", sig_r);
+                $display("s = %h", sig_s);
+                $display("sig (R||s) = %h%h", sig_r, sig_s);
+                // 1 cycle = 10ns (clk #5)
+                $display("[CYCLES] start->done = %0d cycles (%0d ns)",
+                         ($time - t_start)/10, $time - t_start);
+            end
         end
 
         #100 $finish;
