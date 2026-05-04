@@ -148,21 +148,19 @@ BIP-340 公式テストベクタ (`tb_nostr_sign.v` の v0〜v3) も同様にビ
 | `field_mul_p`        |  186 k |     0   | 256x256 mul + 2 段 fast reduction (combinational) |
 | `sha256_block`       |   13 k |  ~2.8 k | FIPS 180-4 圧縮関数 (64 サイクル)         |
 | `sha256_top`         |   11 k |  ~2.8 k | パディング+最大 3 ブロック対応            |
-| `ec_point_mul_g`     | 5,427 k |  ~2.8 k | combinational dbl + add + ec_to_affine + field_inv_p (256 反復) |
-| `ec_engine` (programmable, 既定) |   573 k |  ~4.4 k | 256-bit ALU 共有 + RegFile + ROM 形式に書き直したもの (約 1/9.5 サイズ) |
+| `ec_engine`          |   573 k |  ~4.4 k | 256-bit ALU 共有 + RegFile + microcode ROM |
 
 `nostr_sign` 全体 (`ec_engine` 経由, 技術非依存 cell 数, `synth` 前):
 
-| 指標                                  | v0.1.1 (combinational) | v0.1.2 (programmable) |
-|--------------------------------------|----:|----:|
-| Cells (total)                         | 6,117  | 6,026  |
-| `$mul` (256×256 multiplier instances) | 73     | **10** |
-| `$add` / `$sub`                       | 147 / 86 | 41 / 15 |
-| FF (DFF + ADFF cells)                 | 138    | 143    |
+| 指標                                  | 値      |
+|--------------------------------------|--------:|
+| Cells (total)                         | 6,026   |
+| `$mul` (256×256 multiplier instances) | 10      |
+| `$add` / `$sub`                       | 41 / 15 |
+| FF (DFF + ADFF cells)                 | 143     |
 
-**`$mul` インスタンス数が 73 → 10 と大幅に減少**。これが ALU 共有方式の効果で、
-`ec_engine` の中の 1 個のメインに加え、`field_inv_p` や `scalar_mod_n` 等の
-他箇所にぶら下がる multiplier の合計です。
+`$mul` インスタンス 10 個の内訳: `ec_engine` の中の 1 個のメインに加え、
+`field_inv_p` や `scalar_mod_n` 等の他箇所にぶら下がる multiplier の合計です。
 
 `scalar_mod_n` がシミュレーション用に `%` 演算子を含むため、`nostr_sign`
 トップを LUT4 にマップすると `synth_xilinx` 系でエラーになります。
@@ -173,21 +171,14 @@ BIP-340 公式テストベクタ (`tb_nostr_sign.v` の v0〜v3) も同様にビ
 ### 1 署名あたりのサイクル数 (実測)
 
 `tb_hello_world.v` の start→done を計測 (Nostr `kind:1` イベント 1 件分):
-
-| 構成              | サイクル | 内訳の概要                                |
-|------------------|--------:|-----------------------------------------|
-| v0.1.1 combinational | **1,631** | dbl/add が 1 サイクルで完了             |
-| v0.1.2 programmable  | **20,199** | ALU 共有のため 1 命令 = 1 mul = 1 サイクル |
-
-programmable 版はサイクル数が増えますが、面積・Fmax の総合で性能が出ます。
+**20,199 cycles** (`ec_engine` の ALU 共有のため 1 命令 = 1 サイクル)。
 
 ### Stratix 10 GX 10M に載せた場合の見込み
 
 | 構成 | 推定 Fmax | 1 署名 | sig/s |
 |---|---:|---:|---:|
-| v0.1.1 combinational (mul tree が直列 13 段) | ~5 MHz | 326 µs | ~3,000 |
-| **v0.1.2 programmable (mul 1 段 + ALU mux)** | **~50 MHz** | **404 µs** | **~2,500** |
-| (理想) Montgomery 乗算器 + pipeline | ~300 MHz | ~150 µs | ~6,500 |
+| 現状 (mul 1 段 + ALU mux)            | ~50 MHz  | 404 µs | ~2,500 |
+| (理想) Montgomery 乗算器 + pipeline  | ~300 MHz | ~150 µs | ~6,500 |
 
 ### 比較: ソフトウェア実装
 

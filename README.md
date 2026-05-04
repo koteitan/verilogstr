@@ -148,25 +148,23 @@ many combinational 256×256 multipliers in parallel**, so it is not
 realistically synthesizable as-is. Going to a single Montgomery multiplier
 shared in time-domain (TODO #2) is the prerequisite for any real silicon.
 
-| Module                            | LUT4    | FF       | Notes                                  |
-|-----------------------------------|--------:|---------:|----------------------------------------|
-| `field_mul_p`                     |   186 k |    0     | 256×256 mul + 2-stage fast reduction (combinational) |
-| `sha256_block`                    |    13 k |  ~2.8 k  | FIPS 180-4 compression (64 cycles)     |
-| `sha256_top`                      |    11 k |  ~2.8 k  | Padding + up to 3 blocks               |
-| `ec_point_mul_g`                  | 5,427 k |  ~2.8 k  | Combinational dbl + add + ec_to_affine + field_inv_p (256 iterations) |
-| `ec_engine` (programmable, default) |  573 k |  ~4.4 k  | Rewritten with shared 256-bit ALU + RegFile + ROM (≈ 1/9.5 size) |
+| Module           | LUT4    | FF       | Notes                                  |
+|------------------|--------:|---------:|----------------------------------------|
+| `field_mul_p`    |   186 k |    0     | 256×256 mul + 2-stage fast reduction (combinational) |
+| `sha256_block`   |    13 k |  ~2.8 k  | FIPS 180-4 compression (64 cycles)     |
+| `sha256_top`     |    11 k |  ~2.8 k  | Padding + up to 3 blocks               |
+| `ec_engine`      |   573 k |  ~4.4 k  | Shared 256-bit ALU + RegFile + microcode ROM |
 
 `nostr_sign` top-level (technology-independent cell counts, before `synth`):
 
-| Metric                                     | v0.1.1 (combinational) | v0.1.2 (programmable) |
-|--------------------------------------------|----:|----:|
-| Cells (total)                              | 6,117  | 6,026  |
-| `$mul` (256×256 multiplier instances)      | 73     | **10** |
-| `$add` / `$sub`                            | 147 / 86 | 41 / 15 |
-| FF (DFF + ADFF cells)                      | 138    | 143    |
+| Metric                                     | Value   |
+|--------------------------------------------|--------:|
+| Cells (total)                              | 6,026   |
+| `$mul` (256×256 multiplier instances)      | 10      |
+| `$add` / `$sub`                            | 41 / 15 |
+| FF (DFF + ADFF cells)                      | 143     |
 
-**`$mul` instance count drops from 73 to 10** thanks to ALU sharing.
-The remaining 10 are the one main multiplier inside `ec_engine` plus
+The 10 `$mul` instances are: one main multiplier inside `ec_engine` plus
 multipliers attached to `field_inv_p`, `scalar_mod_n`, etc.
 
 Because `scalar_mod_n` still uses the `%` operator for simulation, mapping
@@ -178,21 +176,14 @@ requires replacing it with a real mod-n multiplier (item 1 in implementation sta
 ### Cycles per signature (measured)
 
 Measured start→done in `tb_hello_world.v` (one Nostr `kind:1` event):
-
-| Configuration            | Cycles     | What dominates                              |
-|--------------------------|----------:|---------------------------------------------|
-| v0.1.1 combinational     | **1,631** | dbl/add complete in a single cycle          |
-| v0.1.2 programmable      | **20,199** | ALU is shared, so 1 instr = 1 mul = 1 cycle |
-
-The programmable version has a higher cycle count but wins on area and Fmax.
+**20,199 cycles** (one instruction per cycle through the shared ALU in `ec_engine`).
 
 ### Estimate on a Stratix 10 GX 10M
 
-| Configuration                                    | Est. Fmax | 1 sig | sig/s |
-|--------------------------------------------------|---------:|------:|------:|
-| v0.1.1 combinational (mul tree 13 stages deep)   | ~5 MHz   | 326 µs | ~3,000 |
-| **v0.1.2 programmable (mul 1 stage + ALU mux)**  | **~50 MHz** | **404 µs** | **~2,500** |
-| (Ideal) Montgomery multiplier + pipeline         | ~300 MHz | ~150 µs | ~6,500 |
+| Configuration                              | Est. Fmax | 1 sig | sig/s |
+|--------------------------------------------|---------:|------:|------:|
+| Current (mul 1 stage + ALU mux)            | ~50 MHz  | 404 µs | ~2,500 |
+| (Ideal) Montgomery multiplier + pipeline   | ~300 MHz | ~150 µs | ~6,500 |
 
 ### Comparison: software implementations
 
