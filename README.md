@@ -59,10 +59,21 @@ Replaced in v0.1.4 with a 256-cycle shift-and-add + two-step subtract.
 
 #### 2. (Done) Constant-time hardening
 Rewritten in v0.1.5 as always-double-and-add with bitwise CMOV mux.
-Demonstrated empirically: 1*G through 5*G all complete in exactly
-1,338,628 cycles (cycle count is independent of the scalar pattern).
-New opcodes `OP_CMOV_NB` / `OP_CMOV_BZ` were added so that the
+New opcodes `OP_CMOV_NB` / `OP_CMOV_BZ` were added so the original
 `LDBN` / `BZ` branches could be eliminated.
+
+**Empirical evidence from `tb_ec_engine`** (`k*G` for several scalars):
+
+| Scalar k | Cycles         | Result  |
+|---------:|---------------:|:--------|
+|        1 | **1,338,628**  | ✅ PASS |
+|        2 | **1,338,628**  | ✅ PASS |
+|        3 | **1,338,628**  | ✅ PASS |
+|        5 | **1,338,628**  | ✅ PASS |
+
+All four runs complete in exactly the same number of cycles even though the
+scalar bit patterns differ — timing-based key leakage is therefore
+impossible at the cycle level.
 
 #### 3. (Done) Sequentialize `field_mul_p`
 Replaced in v0.1.3 by `field_seq_mul_p` (256-cycle shift-and-add).
