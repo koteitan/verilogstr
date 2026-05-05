@@ -2,7 +2,7 @@
 
 # Nostr 署名 (BIP-340 Schnorr / secp256k1) Verilog 実装
 
-version: v0.1.3
+version: v0.1.4
 
 Nostr のイベント署名をハードウェアで実装するための Verilog コードの **設計骨格** です。
 
@@ -51,12 +51,10 @@ BIP-340 Schnorr 署名のロジックはシミュレータ上で公式テスト�
 
 ### ⚠️ 未完了 (合成可能化 / プロダクション化に向けた残作業)
 
-#### 1. mod n 乗算の sequential 化 (`scalar_mod_n`)
-mod p の方は `field_seq_mul_p` で合成可能化済。残るは `scalar_mod_n` の
-`(a*b) mod n` だけが Verilog の `%` 演算子で書かれており、**Yosys で `$mod`
-セルが 1 個残り `nostr_sign` トップの LUT4 マップが失敗**します。
-mod p と同じ shift-and-add 形式の sequential mul + Barrett 還元 (or 2 段
-減算) に置換するのが残課題。
+#### 1. (完了済) mod n 乗算の sequential 化 (`scalar_mod_n`)
+v0.1.4 で `(a*b) mod n` を 256-cycle shift-and-add + 2 段減算還元に置換済。
+**`nostr_sign` 全体が完全に LUT4 マップ可能** (Yosys で約 68,950 LUT4 +
+16,509 FF を確認)。
 
 #### 2. サイドチャネル対策
 `ec_engine` のマイクロコードに `BZ R7` (PZ==0 で分岐) を含むため、最初の
@@ -119,7 +117,7 @@ gtkwave nostr_sign.vcd
 | `event_id`  | `871ce455cfdbaf3deb04a8f101494df9142fc1f9eeba8fc6d0934768f4063062`   |
 | `sig (R)`   | `a6c159cc30a14de9d2a8502fc3354e01c8d63d2a3c7fb2e9ee7c94a9b4a29d97`   |
 | `sig (s)`   | `1e61ef9d59f81885c928203d308466b73a0c7316afe23aa819637d4b06137ac4`   |
-| start→done  | `1,959,065 cycles` (clk=100MHz 換算で 19.6 ms)                        |
+| start→done  | `1,959,297 cycles` (clk=100MHz 換算で 19.6 ms)                        |
 
 署名済イベント (relay へ `["EVENT", ...]` で送信可能):
 
@@ -155,15 +153,18 @@ BIP-340 公式テストベクタ (`tb_nostr_sign.v` の v0〜v3) も同様にビ
 
 `nostr_sign` 全体 (`ec_engine` 経由, 技術非依存 cell 数, `synth` 前):
 
-| 指標                                  | 値      |
-|--------------------------------------|--------:|
-| Cells (total)                         | 6,026   |
-| `$mul` (256×256 multiplier instances) | 5       |
-| `$add` / `$sub`                       | (大幅減) |
-| FF (DFF + ADFF cells)                 | ~150    |
+| 指標                                  | 値        |
+|--------------------------------------|----------:|
+| Cells (total, before synth)           | 6,148     |
+| `$mul` (small ×977 inside reduction)  | 4         |
+| `$mod`                                | **0**     |
+| `$add` / `$sub`                       | 42 / 15   |
+| LUT4 (after `synth → abc -lut 4`)     | **68,950** |
+| FF                                    | 16,509    |
 
-`$mul` 残り 5 個: `field_seq_mul_p` 内の reduction 用小 mul (977 倍乗算) 計 4 個 +
-`scalar_mod_n` のシミュ用 `%` 1 個。
+**`$mod` セルが消滅し、`nostr_sign` 全体が LUT4 マップ可能**になりました。
+68k LUT4 は Stratix 10 GX 10M (~10M LE) どころか中型の Artix-7 / Cyclone V
+クラスにも余裕で載るサイズです。
 
 `scalar_mod_n` がシミュレーション用に `%` 演算子を含むため、`nostr_sign`
 トップを LUT4 にマップすると `synth_xilinx` 系でエラーになります。

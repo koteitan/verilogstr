@@ -413,45 +413,59 @@ module scalar_mod_n (
     localparam [255:0] N =
         256'hFFFFFFFF_FFFFFFFF_FFFFFFFF_FFFFFFFE_BAAEDCE6_AF48A03B_BFD25E8C_D0364141;
 
-    reg [3:0] cnt;
-    reg       active;
-
-    // 実装注: ここでは数サイクル遅延でビヘイビアモデルとして実装する。
-    // 256x256 の乗算は1サイクルでは厳しいので、本格版ではシフト＆加算ループにする。
+    // mod n 乗算は 256-cycle shift-and-add (合成可能)
+    //   op = 0: 1 cycle add
+    //   op = 1: 1 cycle sub
+    //   op = 2: ~256 cycle mul
+    reg [1:0]   op_reg;
+    reg [255:0] a_reg, b_reg;
+    reg [255:0] z;          // mul accumulator (常に < N に保つ)
+    reg [8:0]   i;          // 0..256
+    reg         active;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            active <= 0; done <= 0; cnt <= 0; result <= 0;
+            active <= 1'b0; done <= 1'b0; result <= 256'd0;
+            op_reg <= 2'd0; a_reg <= 256'd0; b_reg <= 256'd0;
+            z <= 256'd0; i <= 9'd0;
         end else begin
-            done <= 0;
+            done <= 1'b0;
             if (start && !active) begin
-                active <= 1;
-                cnt    <= 0;
+                a_reg  <= a;
+                b_reg  <= b;
+                op_reg <= op;
+                z      <= 256'd0;
+                i      <= 9'd0;
+                active <= 1'b1;
             end else if (active) begin
-                if (cnt < 4) begin
-                    cnt <= cnt + 1;
-                end else begin : DO_OP
-                    reg [256:0] tmp_add;
-                    reg signed [257:0] tmp_sub;
-                    reg [511:0] tmp_mul;
-                    case (op)
-                    2'd0: begin
-                        tmp_add = a + b;
-                        result <= (tmp_add >= N) ? tmp_add[255:0] - N : tmp_add[255:0];
+                if (op_reg != 2'd2) begin : ADD_SUB
+                    reg [256:0] sum;
+                    if (op_reg == 2'd0) begin
+                        sum = {1'b0, a_reg} + {1'b0, b_reg};
+                        result <= (sum >= {1'b0, N}) ? (sum[255:0] - N) : sum[255:0];
+                    end else begin
+                        if (a_reg >= b_reg) result <= a_reg - b_reg;
+                        else                result <= N - (b_reg - a_reg);
                     end
-                    2'd1: begin
-                        if (a >= b) result <= a - b;
-                        else        result <= N - (b - a);
+                    done   <= 1'b1;
+                    active <= 1'b0;
+                end else begin : MUL_OP
+                    if (i < 9'd256) begin : MUL_ITER
+                        reg [257:0] t1, t2, t3;
+                        // t1 = (z << 1) + (a[255] ? b : 0); 最大 3N (< 2^258)
+                        t1 = {1'b0, z, 1'b0} +
+                             (a_reg[255] ? {2'b00, b_reg} : 258'd0);
+                        // 2 段で N 未満まで還元
+                        t2 = (t1 >= {2'b00, N}) ? (t1 - {2'b00, N}) : t1;
+                        t3 = (t2 >= {2'b00, N}) ? (t2 - {2'b00, N}) : t2;
+                        z     <= t3[255:0];
+                        a_reg <= {a_reg[254:0], 1'b0};
+                        i     <= i + 9'd1;
+                    end else begin
+                        result <= z;
+                        done   <= 1'b1;
+                        active <= 1'b0;
                     end
-                    2'd2: begin
-                        // 簡易: 上位を捨てて剰余 (ビヘイビア用; 厳密でない)
-                        tmp_mul = a * b;
-                        result  <= tmp_mul % N;   // シミュレーション専用
-                    end
-                    default: result <= a;
-                    endcase
-                    done   <= 1;
-                    active <= 0;
                 end
             end
         end

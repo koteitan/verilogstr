@@ -2,7 +2,7 @@
 
 # Nostr Signing (BIP-340 Schnorr / secp256k1) — Verilog Implementation
 
-version: v0.1.3
+version: v0.1.4
 
 A **design skeleton** of Verilog code that signs Nostr events in hardware.
 
@@ -52,12 +52,10 @@ this to a real FPGA / ASIC.
 
 ### ⚠️ Open items (toward synthesizable / production-grade design)
 
-#### 1. Sequentialize the mod-n multiplier (`scalar_mod_n`)
-The mod-p side is now synthesizable via `field_seq_mul_p`. What remains is
-`scalar_mod_n` — its `(a*b) mod n` still uses the Verilog `%` operator, so
-Yosys leaves a single `$mod` cell behind and the `nostr_sign` top still
-fails to LUT-map. Replacing it with a shift-and-add sequential multiplier
-plus Barrett reduction (or two-step subtract) closes this gap.
+#### 1. (Done) Sequentialize the mod-n multiplier (`scalar_mod_n`)
+Replaced in v0.1.4 with a 256-cycle shift-and-add + two-step subtract.
+**The whole `nostr_sign` top now LUT4-maps cleanly** (Yosys reports
+~68,950 LUT4 + 16,509 FF).
 
 #### 2. Constant-time hardening
 The `ec_engine` microcode contains a `BZ R7` (branch when PZ == 0), which
@@ -123,7 +121,7 @@ and was verified VALID by an external Python BIP-340 reference.
 | `event_id`   | `871ce455cfdbaf3deb04a8f101494df9142fc1f9eeba8fc6d0934768f4063062`   |
 | `sig (R)`    | `a6c159cc30a14de9d2a8502fc3354e01c8d63d2a3c7fb2e9ee7c94a9b4a29d97`   |
 | `sig (s)`    | `1e61ef9d59f81885c928203d308466b73a0c7316afe23aa819637d4b06137ac4`   |
-| start→done   | `1,959,065 cycles` (19.6 ms at 100 MHz)                              |
+| start→done   | `1,959,297 cycles` (19.6 ms at 100 MHz)                              |
 
 The signed event (ready to push as `["EVENT", ...]` to a relay):
 
@@ -159,15 +157,18 @@ shared in time-domain (TODO #2) is the prerequisite for any real silicon.
 
 `nostr_sign` top-level (technology-independent cell counts, before `synth`):
 
-| Metric                                     | Value   |
-|--------------------------------------------|--------:|
-| Cells (total)                              | 6,026   |
-| `$mul` (256×256 multiplier instances)      | 5       |
-| `$add` / `$sub`                            | (much fewer) |
-| FF (DFF + ADFF cells)                      | ~150    |
+| Metric                                     | Value      |
+|--------------------------------------------|-----------:|
+| Cells (total, before synth)                | 6,148      |
+| `$mul` (small ×977 inside reduction)       | 4          |
+| `$mod`                                     | **0**      |
+| `$add` / `$sub`                            | 42 / 15    |
+| LUT4 (after `synth → abc -lut 4`)          | **68,950** |
+| FF                                         | 16,509     |
 
-The 5 remaining `$mul` cells: 4 are small (×977) used inside
-`field_seq_mul_p`'s reduction; 1 is the simulation-only `%` in `scalar_mod_n`.
+The `$mod` cell is **gone**, so the entire `nostr_sign` top now LUT4-maps
+cleanly. 68k LUT4 fits comfortably not only on a Stratix 10 GX 10M
+(~10M LE), but also on mid-size Artix-7 / Cyclone V class FPGAs.
 
 Because `scalar_mod_n` still uses the `%` operator for simulation, mapping
 the `nostr_sign` top to LUT4 with `synth_xilinx` will fail. Synthesizability
