@@ -104,7 +104,7 @@ module tb_nostr_sign;
     end
 
     initial begin
-        #100000000;
+        #1000000000;        // 1G ns = 100M cycles, 4 sigs in constant-time mode
         $display("TIMEOUT");
         $finish;
     end

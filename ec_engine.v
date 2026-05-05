@@ -40,8 +40,10 @@ module ec_engine (
     localparam [3:0] OP_DECB = 4'd7;  // bit_idx>0 ? (bit_idx--, PC=imm) : PC++
     localparam [3:0] OP_SETB = 4'd8;  // bit_idx=255
     localparam [3:0] OP_JMP  = 4'd9;
-    localparam [3:0] OP_HALT = 4'd10;
-    localparam [3:0] OP_BZ   = 4'd11; // if regfile[ra]==0: PC=imm
+    localparam [3:0] OP_HALT    = 4'd10;
+    localparam [3:0] OP_BZ      = 4'd11; // if regfile[ra]==0: PC=imm
+    localparam [3:0] OP_CMOV_NB = 4'd12; // if !scalar[bit_idx]: rd <= regfile[ra]  (constant-time)
+    localparam [3:0] OP_CMOV_BZ = 4'd13; // if scalar[bit_idx] && regfile[rb]==0: rd <= regfile[ra]
 
     //--------------------------------------------------------------------------
     // Register file (16 x 256-bit)
@@ -106,57 +108,51 @@ module ec_engine (
                 6'd23: ucode = enc(OP_MUL,  4'd14, 4'd6,  4'd7, 16'd0);  // Y1*Z1
                 6'd24: ucode = enc(OP_ADD,  4'd14, 4'd14, 4'd14, 16'd0); // DZ = 2*Y1*Z1
 
-                // bit decision
-                6'd25: ucode = enc(OP_LDBN, 4'd0,  4'd0,  4'd0, 16'd50); // bit==0 -> NO_ADD
-                6'd26: ucode = enc(OP_BZ,   4'd0,  4'd7,  4'd0, 16'd54); // PZ==0 (P=O) -> INIT_G
+                // ----- mixed add: (DX,DY,DZ) + (GX,GY,1) ----- (always run; constant-time)
+                // 注: D=O のとき結果はゴミだが、後段の CMOV_BZ で G に上書きされる。
+                6'd25: ucode = enc(OP_MUL,  4'd8,  4'd14, 4'd14, 16'd0); // z1sq
+                6'd26: ucode = enc(OP_MUL,  4'd9,  4'd2,  4'd8, 16'd0);  // u2
+                6'd27: ucode = enc(OP_SUB,  4'd9,  4'd9,  4'd13, 16'd0); // H = u2 - DX
+                6'd28: ucode = enc(OP_MUL,  4'd11, 4'd8,  4'd14, 16'd0); // z1cb
+                6'd29: ucode = enc(OP_MUL,  4'd12, 4'd3,  4'd11, 16'd0); // s2
+                6'd30: ucode = enc(OP_SUB,  4'd12, 4'd12, 4'd10, 16'd0); // s2 - DY
+                6'd31: ucode = enc(OP_ADD,  4'd12, 4'd12, 4'd12, 16'd0); // r = 2*(s2-DY)
+                6'd32: ucode = enc(OP_ADD,  4'd8,  4'd9,  4'd9, 16'd0);  // 2H
+                6'd33: ucode = enc(OP_MUL,  4'd11, 4'd8,  4'd8, 16'd0);  // I = (2H)^2
+                6'd34: ucode = enc(OP_MUL,  4'd15, 4'd9,  4'd11, 16'd0); // J = H*I
+                6'd35: ucode = enc(OP_MUL,  4'd8,  4'd13, 4'd11, 16'd0); // V = DX*I
+                6'd36: ucode = enc(OP_MUL,  4'd11, 4'd12, 4'd12, 16'd0); // r^2
+                6'd37: ucode = enc(OP_SUB,  4'd5,  4'd11, 4'd15, 16'd0); // PX = r^2 - J
+                6'd38: ucode = enc(OP_ADD,  4'd11, 4'd8,  4'd8, 16'd0);  // 2V
+                6'd39: ucode = enc(OP_SUB,  4'd5,  4'd5,  4'd11, 16'd0); // PX -= 2V
+                6'd40: ucode = enc(OP_SUB,  4'd11, 4'd8,  4'd5, 16'd0);  // VmX = V - PX
+                6'd41: ucode = enc(OP_MUL,  4'd11, 4'd12, 4'd11, 16'd0); // r*(V-PX)
+                6'd42: ucode = enc(OP_MUL,  4'd8,  4'd10, 4'd15, 16'd0); // DY*J
+                6'd43: ucode = enc(OP_ADD,  4'd8,  4'd8,  4'd8, 16'd0);  // 2*DY*J
+                6'd44: ucode = enc(OP_SUB,  4'd6,  4'd11, 4'd8, 16'd0);  // PY = r(V-PX) - 2*DY*J
+                6'd45: ucode = enc(OP_ADD,  4'd11, 4'd14, 4'd14, 16'd0); // 2*DZ
+                6'd46: ucode = enc(OP_MUL,  4'd7,  4'd11, 4'd9, 16'd0);  // PZ = 2*DZ*H
 
-                // ----- mixed add: (DX,DY,DZ) + (GX,GY,1) -----
-                6'd27: ucode = enc(OP_MUL,  4'd8,  4'd14, 4'd14, 16'd0); // z1sq
-                6'd28: ucode = enc(OP_MUL,  4'd9,  4'd2,  4'd8, 16'd0);  // u2
-                6'd29: ucode = enc(OP_SUB,  4'd9,  4'd9,  4'd13, 16'd0); // H = u2 - DX
-                6'd30: ucode = enc(OP_MUL,  4'd11, 4'd8,  4'd14, 16'd0); // z1cb
-                6'd31: ucode = enc(OP_MUL,  4'd12, 4'd3,  4'd11, 16'd0); // s2
-                6'd32: ucode = enc(OP_SUB,  4'd12, 4'd12, 4'd10, 16'd0); // s2 - DY
-                6'd33: ucode = enc(OP_ADD,  4'd12, 4'd12, 4'd12, 16'd0); // r = 2*(s2-DY)
-                6'd34: ucode = enc(OP_ADD,  4'd8,  4'd9,  4'd9, 16'd0);  // 2H
-                6'd35: ucode = enc(OP_MUL,  4'd11, 4'd8,  4'd8, 16'd0);  // I = (2H)^2
-                6'd36: ucode = enc(OP_MUL,  4'd15, 4'd9,  4'd11, 16'd0); // J = H*I
-                6'd37: ucode = enc(OP_MUL,  4'd8,  4'd13, 4'd11, 16'd0); // V = DX*I
-                6'd38: ucode = enc(OP_MUL,  4'd11, 4'd12, 4'd12, 16'd0); // r^2
-                6'd39: ucode = enc(OP_SUB,  4'd5,  4'd11, 4'd15, 16'd0); // PX = r^2 - J
-                6'd40: ucode = enc(OP_ADD,  4'd11, 4'd8,  4'd8, 16'd0);  // 2V
-                6'd41: ucode = enc(OP_SUB,  4'd5,  4'd5,  4'd11, 16'd0); // PX -= 2V
-                6'd42: ucode = enc(OP_SUB,  4'd11, 4'd8,  4'd5, 16'd0);  // VmX = V - PX
-                6'd43: ucode = enc(OP_MUL,  4'd11, 4'd12, 4'd11, 16'd0); // r*(V-PX)
-                6'd44: ucode = enc(OP_MUL,  4'd8,  4'd10, 4'd15, 16'd0); // DY*J
-                6'd45: ucode = enc(OP_ADD,  4'd8,  4'd8,  4'd8, 16'd0);  // 2*DY*J
-                6'd46: ucode = enc(OP_SUB,  4'd6,  4'd11, 4'd8, 16'd0);  // PY = r(V-PX) - 2*DY*J
-                6'd47: ucode = enc(OP_ADD,  4'd11, 4'd14, 4'd14, 16'd0); // 2*DZ
-                6'd48: ucode = enc(OP_MUL,  4'd7,  4'd11, 4'd9, 16'd0);  // PZ = 2*DZ*H
-                6'd49: ucode = enc(OP_JMP,  4'd0,  4'd0,  4'd0, 16'd57); // -> NEXT_ITER
-
-                // ----- NO_ADD: P = D -----  (target of LDBN at PC=25)
-                6'd50: ucode = enc(OP_MOV,  4'd5,  4'd13, 4'd0, 16'd0);
-                6'd51: ucode = enc(OP_MOV,  4'd6,  4'd10, 4'd0, 16'd0);
-                6'd52: ucode = enc(OP_MOV,  4'd7,  4'd14, 4'd0, 16'd0);
-                6'd53: ucode = enc(OP_JMP,  4'd0,  4'd0,  4'd0, 16'd57); // -> NEXT_ITER
-
-                // ----- INIT_G: P = G ----- (target of BZ at PC=26)
-                6'd54: ucode = enc(OP_MOV,  4'd5,  4'd2,  4'd0, 16'd0);  // PX = GX
-                6'd55: ucode = enc(OP_MOV,  4'd6,  4'd3,  4'd0, 16'd0);  // PY = GY
-                6'd56: ucode = enc(OP_MOV,  4'd7,  4'd1,  4'd0, 16'd0);  // PZ = 1
-                                                                          // fall through to NEXT_ITER
+                // ----- constant-time fixup -----
+                // bit==0  → P を D に巻き戻す (add 結果を破棄)
+                6'd47: ucode = enc(OP_CMOV_NB, 4'd5, 4'd13, 4'd0, 16'd0);
+                6'd48: ucode = enc(OP_CMOV_NB, 4'd6, 4'd10, 4'd0, 16'd0);
+                6'd49: ucode = enc(OP_CMOV_NB, 4'd7, 4'd14, 4'd0, 16'd0);
+                // bit==1 かつ D.z==0 (= P=O だった場合) → P = G で初期化
+                6'd50: ucode = enc(OP_CMOV_BZ, 4'd5, 4'd2, 4'd14, 16'd0);
+                6'd51: ucode = enc(OP_CMOV_BZ, 4'd6, 4'd3, 4'd14, 16'd0);
+                6'd52: ucode = enc(OP_CMOV_BZ, 4'd7, 4'd1, 4'd14, 16'd0);
 
                 // ----- NEXT_ITER -----
-                6'd57: ucode = enc(OP_DECB, 4'd0,  4'd0,  4'd0, 16'd4);  // bit_idx--; if was>0 -> LOOP
+                6'd53: ucode = enc(OP_DECB, 4'd0,  4'd0,  4'd0, 16'd4);
 
                 // ----- to affine -----
-                6'd58: ucode = enc(OP_INV,  4'd8,  4'd7,  4'd0, 16'd0);  // Zinv = inv(PZ)
-                6'd59: ucode = enc(OP_MUL,  4'd9,  4'd8,  4'd8, 16'd0);  // Zinv^2
-                6'd60: ucode = enc(OP_MUL,  4'd10, 4'd9,  4'd8, 16'd0);  // Zinv^3
-                6'd61: ucode = enc(OP_MUL,  4'd5,  4'd5,  4'd9, 16'd0);  // rx
-                6'd62: ucode = enc(OP_MUL,  4'd6,  4'd6,  4'd10, 16'd0); // ry
-                6'd63: ucode = enc(OP_HALT, 4'd0,  4'd0,  4'd0, 16'd0);
+                6'd54: ucode = enc(OP_INV,  4'd8,  4'd7,  4'd0, 16'd0);
+                6'd55: ucode = enc(OP_MUL,  4'd9,  4'd8,  4'd8, 16'd0);
+                6'd56: ucode = enc(OP_MUL,  4'd10, 4'd9,  4'd8, 16'd0);
+                6'd57: ucode = enc(OP_MUL,  4'd5,  4'd5,  4'd9, 16'd0);
+                6'd58: ucode = enc(OP_MUL,  4'd6,  4'd6,  4'd10, 16'd0);
+                6'd59: ucode = enc(OP_HALT, 4'd0,  4'd0,  4'd0, 16'd0);
 
                 default: ucode = enc(OP_HALT, 4'd0, 4'd0, 4'd0, 16'd0);
             endcase
@@ -289,6 +285,16 @@ module ec_engine (
                     end
                     OP_BZ: begin
                         pc <= (a_val == 256'd0) ? imm[5:0] : (pc + 6'd1);
+                    end
+                    OP_CMOV_NB: begin
+                        if ((rd >= 4'd4) && !scalar[bit_idx])
+                            regfile[rd] <= a_val;
+                        pc <= pc + 6'd1;
+                    end
+                    OP_CMOV_BZ: begin
+                        if ((rd >= 4'd4) && scalar[bit_idx] && (b_val == 256'd0))
+                            regfile[rd] <= a_val;
+                        pc <= pc + 6'd1;
                     end
                     OP_HALT: begin
                         rx      <= regfile[5];

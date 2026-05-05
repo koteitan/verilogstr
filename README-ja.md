@@ -2,7 +2,7 @@
 
 # Nostr 署名 (BIP-340 Schnorr / secp256k1) Verilog 実装
 
-version: v0.1.4
+version: v0.1.5
 
 Nostr のイベント署名をハードウェアで実装するための Verilog コードの **設計骨格** です。
 
@@ -56,10 +56,11 @@ v0.1.4 で `(a*b) mod n` を 256-cycle shift-and-add + 2 段減算還元に置�
 **`nostr_sign` 全体が完全に LUT4 マップ可能** (Yosys で約 68,950 LUT4 +
 16,509 FF を確認)。
 
-#### 2. サイドチャネル対策
-`ec_engine` のマイクロコードに `BZ R7` (PZ==0 で分岐) を含むため、最初の
-非ゼロビットの位置でタイミングが変わります。always-double-and-add + dummy-add
-形式に書き換えれば一定時間化が可能。
+#### 2. (完了済) サイドチャネル対策 (constant-time 化)
+v0.1.5 で always-double-and-add + bitwise CMOV mux に書き換え済。
+スカラーの全ビットパターンに対し **同一サイクル数** (1*G..5*G で全 1,338,628 cycles) を
+実機シミュレーションで実証。新オペコード `OP_CMOV_NB` / `OP_CMOV_BZ` を追加し、
+分岐 `LDBN` / `BZ` を排除。
 
 #### 3. (完了済) `field_mul_p` の sequential 化
 v0.1.3 で `field_seq_mul_p` (256-cycle shift-and-add) に置換済。
@@ -117,7 +118,7 @@ gtkwave nostr_sign.vcd
 | `event_id`  | `871ce455cfdbaf3deb04a8f101494df9142fc1f9eeba8fc6d0934768f4063062`   |
 | `sig (R)`   | `a6c159cc30a14de9d2a8502fc3354e01c8d63d2a3c7fb2e9ee7c94a9b4a29d97`   |
 | `sig (s)`   | `1e61ef9d59f81885c928203d308466b73a0c7316afe23aa819637d4b06137ac4`   |
-| start→done  | `1,959,297 cycles` (clk=100MHz 換算で 19.6 ms)                        |
+| start→done  | `2,678,083 cycles` (clk=100MHz 換算で 26.8 ms; constant-time)         |
 
 署名済イベント (relay へ `["EVENT", ...]` で送信可能):
 
@@ -159,7 +160,7 @@ BIP-340 公式テストベクタ (`tb_nostr_sign.v` の v0〜v3) も同様にビ
 | `$mul` (small ×977 inside reduction)  | 4         |
 | `$mod`                                | **0**     |
 | `$add` / `$sub`                       | 42 / 15   |
-| LUT4 (after `synth → abc -lut 4`)     | **68,950** |
+| LUT4 (after `synth → abc -lut 4`)     | **83,670** |
 | FF                                    | 16,509    |
 
 **`$mod` セルが消滅し、`nostr_sign` 全体が LUT4 マップ可能**になりました。
@@ -175,14 +176,14 @@ BIP-340 公式テストベクタ (`tb_nostr_sign.v` の v0〜v3) も同様にビ
 ### 1 署名あたりのサイクル数 (実測)
 
 `tb_hello_world.v` の start→done を計測 (Nostr `kind:1` イベント 1 件分):
-**1,959,065 cycles** (sequential mul の採用でスループットを下げ、合成可能性と
-Fmax を確保。1 mul = 256 cycle, 1 inv ≈ 131k cycle)。
+**2,678,083 cycles** (constant-time always-double-and-add で、スカラーに
+依存しない一定サイクル。1 mul = 256 cycle, 1 inv ≈ 131k cycle)。
 
 ### Stratix 10 GX 10M に載せた場合の見込み
 
 | 構成 | 推定 Fmax | 1 署名 | sig/s |
 |---|---:|---:|---:|
-| 現状 (sequential mul, ALU 共有)        | ~200 MHz | 9.8 ms | ~100 |
+| 現状 (constant-time, sequential mul)   | ~200 MHz | 13.4 ms | ~75   |
 | (理想) Montgomery 乗算器 + pipeline    | ~300 MHz | ~150 µs | ~6,500 |
 
 ### 比較: ソフトウェア実装

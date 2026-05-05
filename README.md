@@ -2,7 +2,7 @@
 
 # Nostr Signing (BIP-340 Schnorr / secp256k1) — Verilog Implementation
 
-version: v0.1.4
+version: v0.1.5
 
 A **design skeleton** of Verilog code that signs Nostr events in hardware.
 
@@ -57,10 +57,12 @@ Replaced in v0.1.4 with a 256-cycle shift-and-add + two-step subtract.
 **The whole `nostr_sign` top now LUT4-maps cleanly** (Yosys reports
 ~68,950 LUT4 + 16,509 FF).
 
-#### 2. Constant-time hardening
-The `ec_engine` microcode contains a `BZ R7` (branch when PZ == 0), which
-makes the timing depend on the position of the highest-set bit of the
-scalar. Rewriting as always-double-and-add + dummy-add gives constant-time.
+#### 2. (Done) Constant-time hardening
+Rewritten in v0.1.5 as always-double-and-add with bitwise CMOV mux.
+Demonstrated empirically: 1*G through 5*G all complete in exactly
+1,338,628 cycles (cycle count is independent of the scalar pattern).
+New opcodes `OP_CMOV_NB` / `OP_CMOV_BZ` were added so that the
+`LDBN` / `BZ` branches could be eliminated.
 
 #### 3. (Done) Sequentialize `field_mul_p`
 Replaced in v0.1.3 by `field_seq_mul_p` (256-cycle shift-and-add).
@@ -121,7 +123,7 @@ and was verified VALID by an external Python BIP-340 reference.
 | `event_id`   | `871ce455cfdbaf3deb04a8f101494df9142fc1f9eeba8fc6d0934768f4063062`   |
 | `sig (R)`    | `a6c159cc30a14de9d2a8502fc3354e01c8d63d2a3c7fb2e9ee7c94a9b4a29d97`   |
 | `sig (s)`    | `1e61ef9d59f81885c928203d308466b73a0c7316afe23aa819637d4b06137ac4`   |
-| start→done   | `1,959,297 cycles` (19.6 ms at 100 MHz)                              |
+| start→done   | `2,678,083 cycles` (26.8 ms at 100 MHz; constant-time)               |
 
 The signed event (ready to push as `["EVENT", ...]` to a relay):
 
@@ -163,7 +165,7 @@ shared in time-domain (TODO #2) is the prerequisite for any real silicon.
 | `$mul` (small ×977 inside reduction)       | 4          |
 | `$mod`                                     | **0**      |
 | `$add` / `$sub`                            | 42 / 15    |
-| LUT4 (after `synth → abc -lut 4`)          | **68,950** |
+| LUT4 (after `synth → abc -lut 4`)          | **83,670** |
 | FF                                         | 16,509     |
 
 The `$mod` cell is **gone**, so the entire `nostr_sign` top now LUT4-maps
@@ -179,14 +181,14 @@ requires replacing it with a real mod-n multiplier (item 1 in implementation sta
 ### Cycles per signature (measured)
 
 Measured start→done in `tb_hello_world.v` (one Nostr `kind:1` event):
-**1,959,065 cycles** — the sequential multiplier trades throughput for
-synthesizability and a higher Fmax (1 mul = 256 cycles, 1 inv ≈ 131k cycles).
+**2,678,083 cycles** — constant-time always-double-and-add, so the cycle
+count does not depend on the scalar (1 mul = 256 cycles, 1 inv ≈ 131k cycles).
 
 ### Estimate on a Stratix 10 GX 10M
 
-| Configuration                              | Est. Fmax | 1 sig  | sig/s |
-|--------------------------------------------|---------:|-------:|------:|
-| Current (sequential mul, ALU shared)       | ~200 MHz | 9.8 ms | ~100  |
+| Configuration                              | Est. Fmax | 1 sig   | sig/s |
+|--------------------------------------------|---------:|--------:|------:|
+| Current (constant-time, sequential mul)    | ~200 MHz | 13.4 ms | ~75   |
 | (Ideal) Montgomery multiplier + pipeline   | ~300 MHz | ~150 µs | ~6,500 |
 
 ### Comparison: software implementations

@@ -62,7 +62,7 @@ module tb_hello_world;
     end
 
     initial begin
-        #100000000;
+        #500000000;
         $display("TIMEOUT");
         $finish;
     end
