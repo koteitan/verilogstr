@@ -56,6 +56,7 @@ module ec_engine (
     reg [7:0] bit_idx;
     reg       running;
     reg       inv_active;
+    reg       mul_active;
 
     //--------------------------------------------------------------------------
     // Microinstruction ROM
@@ -189,18 +190,26 @@ module ec_engine (
                                         regfile[rb];
 
     //--------------------------------------------------------------------------
-    // ALU 共有: ADD_P / SUB_P / MUL_P (combinational), INV_P (sequential)
+    // ALU 共有:
+    //   ADD_P / SUB_P : combinational (1 cycle)
+    //   MUL_P         : sequential 256-cycle shift-and-add (synthesizable)
+    //   INV_P         : sequential Fermat (内部で MUL を使い回す)
     //--------------------------------------------------------------------------
-    wire [255:0] add_r, sub_r, mul_r;
+    wire [255:0] add_r, sub_r;
     field_add_p u_add (.a(a_val), .b(b_val), .r(add_r));
     field_sub_p u_sub (.a(a_val), .b(b_val), .r(sub_r));
-    field_mul_p u_mul (.a(a_val), .b(b_val), .r(mul_r));
+
+    reg          mul_start;
+    wire         mul_done;
+    wire [255:0] mul_r;
+    field_seq_mul_p u_mul (.clk(clk), .rst_n(rst_n), .start(mul_start),
+                           .a(a_val), .b(b_val), .done(mul_done), .r(mul_r));
 
     reg          inv_start;
     wire         inv_done;
     wire [255:0] inv_r;
-    field_inv_p u_inv (.clk(clk), .rst_n(rst_n), .start(inv_start),
-                       .a(a_val), .done(inv_done), .r(inv_r));
+    field_seq_inv_p u_inv (.clk(clk), .rst_n(rst_n), .start(inv_start),
+                           .a(a_val), .done(inv_done), .r(inv_r));
 
     //--------------------------------------------------------------------------
     // Sequencer
@@ -210,11 +219,13 @@ module ec_engine (
         if (!rst_n) begin
             running <= 1'b0; done <= 1'b0; pc <= 6'd0; bit_idx <= 8'd0;
             inv_start <= 1'b0; inv_active <= 1'b0;
+            mul_start <= 1'b0; mul_active <= 1'b0;
             rx <= 256'd0; ry <= 256'd0;
             for (k = 4; k <= 15; k = k + 1) regfile[k] <= 256'd0;
         end else begin
             done      <= 1'b0;
             inv_start <= 1'b0;
+            mul_start <= 1'b0;
 
             if (!running) begin
                 if (start) begin
@@ -232,8 +243,14 @@ module ec_engine (
                         pc <= pc + 6'd1;
                     end
                     OP_MUL: begin
-                        if (rd >= 4) regfile[rd] <= mul_r;
-                        pc <= pc + 6'd1;
+                        if (!mul_active) begin
+                            mul_start  <= 1'b1;
+                            mul_active <= 1'b1;
+                        end else if (mul_done) begin
+                            if (rd >= 4) regfile[rd] <= mul_r;
+                            mul_active <= 1'b0;
+                            pc         <= pc + 6'd1;
+                        end
                     end
                     OP_MOV: begin
                         if (rd >= 4) regfile[rd] <= a_val;

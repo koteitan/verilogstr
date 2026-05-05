@@ -2,7 +2,7 @@
 
 # Nostr 署名 (BIP-340 Schnorr / secp256k1) Verilog 実装
 
-version: v0.1.2
+version: v0.1.3
 
 Nostr のイベント署名をハードウェアで実装するための Verilog コードの **設計骨格** です。
 
@@ -12,7 +12,8 @@ Nostr のイベント署名をハードウェアで実装するための Verilog
 |----------------------|---------------------------------------------------------------|
 | `nostr_sign.v`       | トップモジュール。BIP-340 Schnorr 署名のステートマシン本体     |
 | `sha256_core.v`      | SHA-256 圧縮関数 + 任意長 (≦183B) メッセージ + タグ付きハッシュラッパ |
-| `ec_arith.v`         | secp256k1 mod p 算術 (add/sub/mul/inv) と Jacobian 点演算 (combinational) |
+| `ec_arith.v`         | secp256k1 mod p 算術 (add/sub/mul/inv 組合せ版) と Jacobian 点演算 |
+| `field_seq.v`        | 合成可能な sequential 256-cycle 乗算器 + Fermat 法逆元 (~131k cycle) |
 | `ec_engine.v`        | プログラマブル EC エンジン (ALU 共有 + RegFile + microcode ROM) — `nostr_sign` の `k*G` で使用 |
 | `tb_nostr_sign.v`    | BIP-340 公式テストベクタ v0〜v3                                |
 | `tb_hello_world.v`   | 実 Nostr イベント (kind:1, "hello world") 署名デモ             |
@@ -50,20 +51,21 @@ BIP-340 Schnorr 署名のロジックはシミュレータ上で公式テスト�
 
 ### ⚠️ 未完了 (合成可能化 / プロダクション化に向けた残作業)
 
-#### 1. mod n 乗算の Montgomery 化 (`scalar_mod_n`)
-現状 `(a*b) mod n` を Verilog の `%` 演算子で書いており、**iverilog では
-動くが Yosys 等の synth で `$mod` セルが残り合成不可**。Montgomery 乗算器
-(256 cycle/mul) に置換すれば `nostr_sign` トップを LUT4 にマップできます。
+#### 1. mod n 乗算の sequential 化 (`scalar_mod_n`)
+mod p の方は `field_seq_mul_p` で合成可能化済。残るは `scalar_mod_n` の
+`(a*b) mod n` だけが Verilog の `%` 演算子で書かれており、**Yosys で `$mod`
+セルが 1 個残り `nostr_sign` トップの LUT4 マップが失敗**します。
+mod p と同じ shift-and-add 形式の sequential mul + Barrett 還元 (or 2 段
+減算) に置換するのが残課題。
 
 #### 2. サイドチャネル対策
 `ec_engine` のマイクロコードに `BZ R7` (PZ==0 で分岐) を含むため、最初の
 非ゼロビットの位置でタイミングが変わります。always-double-and-add + dummy-add
 形式に書き換えれば一定時間化が可能。
 
-#### 3. `field_mul_p` の sequential 化
-現状 256×256 mul を combinational で持つため `field_mul_p` 1 個で 186k LUT4
-を消費。Montgomery 乗算器化すれば数千 LUT にできるが、サイクル数は増えます
-(1 mul = 1 cycle → 256 cycle)。面積 vs 性能のトレードオフ。
+#### 3. (完了済) `field_mul_p` の sequential 化
+v0.1.3 で `field_seq_mul_p` (256-cycle shift-and-add) に置換済。
+~3.4k LUT4 で合成可能、Fmax 200 MHz 級が見込めます。
 
 #### 4. `field_inv_p` の高速化
 Fermat 法 (256+ cycle) を binary GCD 系に置き換えれば数十 cycle で済みます。
@@ -117,7 +119,7 @@ gtkwave nostr_sign.vcd
 | `event_id`  | `871ce455cfdbaf3deb04a8f101494df9142fc1f9eeba8fc6d0934768f4063062`   |
 | `sig (R)`   | `a6c159cc30a14de9d2a8502fc3354e01c8d63d2a3c7fb2e9ee7c94a9b4a29d97`   |
 | `sig (s)`   | `1e61ef9d59f81885c928203d308466b73a0c7316afe23aa819637d4b06137ac4`   |
-| start→done  | `20,199 cycles` (clk=100MHz 換算で 202 µs)                            |
+| start→done  | `1,959,065 cycles` (clk=100MHz 換算で 19.6 ms)                        |
 
 署名済イベント (relay へ `["EVENT", ...]` で送信可能):
 
@@ -144,23 +146,24 @@ BIP-340 公式テストベクタ (`tb_nostr_sign.v` の v0〜v3) も同様にビ
 時分割使用する形に書き換えるのが本格実装の前提となります (TODO 項目 2)。
 
 | モジュール             | LUT4   | FF      | 備考                                    |
-|----------------------|--------|---------|-----------------------------------------|
-| `field_mul_p`        |  186 k |     0   | 256x256 mul + 2 段 fast reduction (combinational) |
+|----------------------|-------:|--------:|-----------------------------------------|
+| `field_seq_mul_p`    |  3.4 k |  1.0 k  | sequential 256 サイクル × 1 (合成可能)    |
+| `field_seq_inv_p`    |  ~7 k  |  ~1.5 k | Fermat 法 ~131k cycle (mul を共有再利用)   |
 | `sha256_block`       |   13 k |  ~2.8 k | FIPS 180-4 圧縮関数 (64 サイクル)         |
 | `sha256_top`         |   11 k |  ~2.8 k | パディング+最大 3 ブロック対応            |
-| `ec_engine`          |   573 k |  ~4.4 k | 256-bit ALU 共有 + RegFile + microcode ROM |
+| `ec_engine`          |   39 k |  ~7.5 k | 256-bit ALU 共有 + RegFile + microcode ROM |
 
 `nostr_sign` 全体 (`ec_engine` 経由, 技術非依存 cell 数, `synth` 前):
 
 | 指標                                  | 値      |
 |--------------------------------------|--------:|
 | Cells (total)                         | 6,026   |
-| `$mul` (256×256 multiplier instances) | 10      |
-| `$add` / `$sub`                       | 41 / 15 |
-| FF (DFF + ADFF cells)                 | 143     |
+| `$mul` (256×256 multiplier instances) | 5       |
+| `$add` / `$sub`                       | (大幅減) |
+| FF (DFF + ADFF cells)                 | ~150    |
 
-`$mul` インスタンス 10 個の内訳: `ec_engine` の中の 1 個のメインに加え、
-`field_inv_p` や `scalar_mod_n` 等の他箇所にぶら下がる multiplier の合計です。
+`$mul` 残り 5 個: `field_seq_mul_p` 内の reduction 用小 mul (977 倍乗算) 計 4 個 +
+`scalar_mod_n` のシミュ用 `%` 1 個。
 
 `scalar_mod_n` がシミュレーション用に `%` 演算子を含むため、`nostr_sign`
 トップを LUT4 にマップすると `synth_xilinx` 系でエラーになります。
@@ -171,14 +174,15 @@ BIP-340 公式テストベクタ (`tb_nostr_sign.v` の v0〜v3) も同様にビ
 ### 1 署名あたりのサイクル数 (実測)
 
 `tb_hello_world.v` の start→done を計測 (Nostr `kind:1` イベント 1 件分):
-**20,199 cycles** (`ec_engine` の ALU 共有のため 1 命令 = 1 サイクル)。
+**1,959,065 cycles** (sequential mul の採用でスループットを下げ、合成可能性と
+Fmax を確保。1 mul = 256 cycle, 1 inv ≈ 131k cycle)。
 
 ### Stratix 10 GX 10M に載せた場合の見込み
 
 | 構成 | 推定 Fmax | 1 署名 | sig/s |
 |---|---:|---:|---:|
-| 現状 (mul 1 段 + ALU mux)            | ~50 MHz  | 404 µs | ~2,500 |
-| (理想) Montgomery 乗算器 + pipeline  | ~300 MHz | ~150 µs | ~6,500 |
+| 現状 (sequential mul, ALU 共有)        | ~200 MHz | 9.8 ms | ~100 |
+| (理想) Montgomery 乗算器 + pipeline    | ~300 MHz | ~150 µs | ~6,500 |
 
 ### 比較: ソフトウェア実装
 

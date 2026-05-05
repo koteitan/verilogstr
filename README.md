@@ -2,7 +2,7 @@
 
 # Nostr Signing (BIP-340 Schnorr / secp256k1) — Verilog Implementation
 
-version: v0.1.2
+version: v0.1.3
 
 A **design skeleton** of Verilog code that signs Nostr events in hardware.
 
@@ -12,7 +12,8 @@ A **design skeleton** of Verilog code that signs Nostr events in hardware.
 |-----------------------|----------------------------------------------------------------|
 | `nostr_sign.v`        | Top module. State machine for the BIP-340 Schnorr signing flow |
 | `sha256_core.v`       | SHA-256 compression + variable-length (≤183 B) message + tagged-hash wrapper |
-| `ec_arith.v`          | secp256k1 mod-p arithmetic (add/sub/mul/inv) and Jacobian point ops (combinational) |
+| `ec_arith.v`          | secp256k1 mod-p arithmetic (combinational add/sub/mul/inv) and Jacobian point ops |
+| `field_seq.v`         | Synthesizable sequential 256-cycle multiplier + Fermat inverter (~131k cycles) |
 | `ec_engine.v`         | Programmable EC engine (shared ALU + RegFile + microcode ROM) — used by `nostr_sign` for `k*G` |
 | `tb_nostr_sign.v`     | BIP-340 official test vectors v0–v3                            |
 | `tb_hello_world.v`    | Real Nostr event (kind:1, "hello world") signing demo          |
@@ -51,21 +52,21 @@ this to a real FPGA / ASIC.
 
 ### ⚠️ Open items (toward synthesizable / production-grade design)
 
-#### 1. Montgomery-ize the mod-n multiplier (`scalar_mod_n`)
-Currently `(a*b) mod n` is written with the Verilog `%` operator. **It runs
-in iverilog but Yosys-class synthesis leaves a `$mod` cell behind, which is
-not synthesizable.** Replacing it with a Montgomery multiplier (256 cycles
-per mul) is what unblocks LUT-mapping the `nostr_sign` top.
+#### 1. Sequentialize the mod-n multiplier (`scalar_mod_n`)
+The mod-p side is now synthesizable via `field_seq_mul_p`. What remains is
+`scalar_mod_n` — its `(a*b) mod n` still uses the Verilog `%` operator, so
+Yosys leaves a single `$mod` cell behind and the `nostr_sign` top still
+fails to LUT-map. Replacing it with a shift-and-add sequential multiplier
+plus Barrett reduction (or two-step subtract) closes this gap.
 
 #### 2. Constant-time hardening
 The `ec_engine` microcode contains a `BZ R7` (branch when PZ == 0), which
 makes the timing depend on the position of the highest-set bit of the
 scalar. Rewriting as always-double-and-add + dummy-add gives constant-time.
 
-#### 3. Sequentialize `field_mul_p`
-The current 256×256 mul is combinational, so a single `field_mul_p` instance
-costs 186 k LUT4. Going Montgomery brings it down to a few thousand LUTs at
-the cost of one mul taking ~256 cycles. Area vs. throughput trade-off.
+#### 3. (Done) Sequentialize `field_mul_p`
+Replaced in v0.1.3 by `field_seq_mul_p` (256-cycle shift-and-add).
+~3.4k LUT4, synthesizable, ~200 MHz target Fmax.
 
 #### 4. Speed up `field_inv_p`
 Fermat's method needs 256+ cycles. Replacing with a binary-GCD-style inverter
@@ -122,7 +123,7 @@ and was verified VALID by an external Python BIP-340 reference.
 | `event_id`   | `871ce455cfdbaf3deb04a8f101494df9142fc1f9eeba8fc6d0934768f4063062`   |
 | `sig (R)`    | `a6c159cc30a14de9d2a8502fc3354e01c8d63d2a3c7fb2e9ee7c94a9b4a29d97`   |
 | `sig (s)`    | `1e61ef9d59f81885c928203d308466b73a0c7316afe23aa819637d4b06137ac4`   |
-| start→done   | `20,199 cycles` (202 µs at 100 MHz)                                  |
+| start→done   | `1,959,065 cycles` (19.6 ms at 100 MHz)                              |
 
 The signed event (ready to push as `["EVENT", ...]` to a relay):
 
@@ -148,24 +149,25 @@ many combinational 256×256 multipliers in parallel**, so it is not
 realistically synthesizable as-is. Going to a single Montgomery multiplier
 shared in time-domain (TODO #2) is the prerequisite for any real silicon.
 
-| Module           | LUT4    | FF       | Notes                                  |
-|------------------|--------:|---------:|----------------------------------------|
-| `field_mul_p`    |   186 k |    0     | 256×256 mul + 2-stage fast reduction (combinational) |
-| `sha256_block`   |    13 k |  ~2.8 k  | FIPS 180-4 compression (64 cycles)     |
-| `sha256_top`     |    11 k |  ~2.8 k  | Padding + up to 3 blocks               |
-| `ec_engine`      |   573 k |  ~4.4 k  | Shared 256-bit ALU + RegFile + microcode ROM |
+| Module             | LUT4    | FF       | Notes                                  |
+|--------------------|--------:|---------:|----------------------------------------|
+| `field_seq_mul_p`  |  3.4 k  |   1.0 k  | Sequential 256-cycle multiplier (synthesizable) |
+| `field_seq_inv_p`  |  ~7 k   |  ~1.5 k  | Fermat method, ~131k cycles (multiplier reused) |
+| `sha256_block`     |   13 k  |  ~2.8 k  | FIPS 180-4 compression (64 cycles)     |
+| `sha256_top`       |   11 k  |  ~2.8 k  | Padding + up to 3 blocks               |
+| `ec_engine`        |   39 k  |  ~7.5 k  | Shared 256-bit ALU + RegFile + microcode ROM |
 
 `nostr_sign` top-level (technology-independent cell counts, before `synth`):
 
 | Metric                                     | Value   |
 |--------------------------------------------|--------:|
 | Cells (total)                              | 6,026   |
-| `$mul` (256×256 multiplier instances)      | 10      |
-| `$add` / `$sub`                            | 41 / 15 |
-| FF (DFF + ADFF cells)                      | 143     |
+| `$mul` (256×256 multiplier instances)      | 5       |
+| `$add` / `$sub`                            | (much fewer) |
+| FF (DFF + ADFF cells)                      | ~150    |
 
-The 10 `$mul` instances are: one main multiplier inside `ec_engine` plus
-multipliers attached to `field_inv_p`, `scalar_mod_n`, etc.
+The 5 remaining `$mul` cells: 4 are small (×977) used inside
+`field_seq_mul_p`'s reduction; 1 is the simulation-only `%` in `scalar_mod_n`.
 
 Because `scalar_mod_n` still uses the `%` operator for simulation, mapping
 the `nostr_sign` top to LUT4 with `synth_xilinx` will fail. Synthesizability
@@ -176,13 +178,14 @@ requires replacing it with a real mod-n multiplier (item 1 in implementation sta
 ### Cycles per signature (measured)
 
 Measured start→done in `tb_hello_world.v` (one Nostr `kind:1` event):
-**20,199 cycles** (one instruction per cycle through the shared ALU in `ec_engine`).
+**1,959,065 cycles** — the sequential multiplier trades throughput for
+synthesizability and a higher Fmax (1 mul = 256 cycles, 1 inv ≈ 131k cycles).
 
 ### Estimate on a Stratix 10 GX 10M
 
-| Configuration                              | Est. Fmax | 1 sig | sig/s |
-|--------------------------------------------|---------:|------:|------:|
-| Current (mul 1 stage + ALU mux)            | ~50 MHz  | 404 µs | ~2,500 |
+| Configuration                              | Est. Fmax | 1 sig  | sig/s |
+|--------------------------------------------|---------:|-------:|------:|
+| Current (sequential mul, ALU shared)       | ~200 MHz | 9.8 ms | ~100  |
 | (Ideal) Montgomery multiplier + pipeline   | ~300 MHz | ~150 µs | ~6,500 |
 
 ### Comparison: software implementations
